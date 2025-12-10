@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Result, BufWriter, BufReader, Write, Seek, Read, SeekFrom};
 
+type Bytes = Vec<u8>;
+
 const OP_BEGIN: u8 = 0;
 const OP_PUT: u8 = 1;
 const OP_DELETE: u8 = 2;
@@ -12,7 +14,7 @@ pub struct Db {
     wal_writer: BufWriter<File>,
     data_reader: BufReader<File>,
     data_writer: BufWriter<File>,
-    index: BTreeMap<String, u64>,
+    index: BTreeMap<Bytes, u64>,
     data_writer_pos: u64,
 }
 
@@ -23,19 +25,17 @@ impl Db {
     pub fn new() -> Result<Self> {
         let mut wal_read_file = OpenOptions::new()
             .read(true)
-            .write(true)
             .create(true)
             .open(Self::WAL_PATH)?;
         
         let mut wal_write_file = OpenOptions::new()
-            .read(true)
             .write(true)
+            .append(true)
             .create(true)
             .open(Self::WAL_PATH)?;
         
         let mut data_read_file = OpenOptions::new()
-            .write(true)
-            .append(true)
+            .read(true)
             .create(true)
             .open(Self::DATA_PATH)?;
         
@@ -56,50 +56,186 @@ impl Db {
         Ok(Self { wal_reader, wal_writer, data_reader, data_writer, index, data_writer_pos })
     }
 
-    fn build_index(file: &mut File) -> Result<(BTreeMap<String, u64>, u64)> {
-        todo!
+    fn build_index(file: &mut File) -> io::Result<(BTreeMap<Bytes, u64>, u64)> {
+        let mut index = BTreeMap::new();
+        let mut offset: u64 = 0;
+
+        loop {
+            let entry_start = offset;
+            let mut op_buf = [0u8; 1];
+            match file.read_exact(&mut op_buf) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e),
+            }
+            let op = op_buf[0];
+            offset += 1;
+            
+            let mut len_buf = [0u8; 4];
+            file.read_exact(&mut len_buf)?;
+            let key_len = u32::from_le_bytes(len_buf) as u64;
+            offset += 4;
+
+            file.read_exact(&mut len_buf)?;
+            let val_len = u32::from_le_bytes(len_buf) as u64;
+            offset += 4;
+
+            let mut key_buf = vec![0u8; key_len as usize];
+            file.read_exact(&mut key_buf)?;
+            offset += key_len;
+
+            let mut val_buf = vec![0u8; val_len as usize];
+            if val_len > 0 {
+                file.read_exact(&mut val_buf)?;
+            }
+            offset += val_len;
+
+            match op {
+                Self::OP_PUT => {
+                    index.insert(key_buf, entry_start);
+                },
+                Self::OP_DELETE => {
+                    index.remove(&key_buf);
+                },
+                _ => {}
+            }
+        }
+
+        Ok((index, offset))
     }
 
-    pub fn commit(&mut self, tx: Transaction) {
-        // write to WAL
+    pub fn commit(&mut self, tx: Transaction) -> Result<()> {
+        // write to WAL (begin, set/delete, commit)
         // Write to DATA
         // update index
+        self.append_begin()?;
+
+        for op in &tx.operations {
+            // 
+            match op {
+                Ops::Set(k, v) => {
+                    self.append_wal_set(k, v)?;
+                }, 
+                Ops::Delete(k) => {
+                    self.append_wal_delete(k)?;
+                }
+            }
+        }
+
+        self.append_commit()?;
+        self.wal_writer.flush()?;
+        self.wal_writer.get_ref().sync_all()?;
+
+        for op in tx.operations {
+            match op {
+                Ops::Set(k, v) => {
+                    self.append_data_set(k, v)?;
+                }, 
+                Ops::Delete(k) => {
+                    self.append_data_delete(k)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
-    fn append_begin() -> Result<()> {
-        todo!
+    fn append_begin(&mut self) -> Result<()> {
+        self.wal_writer.write_all(&[OP_BEGIN])?;
+        Ok(())
     }
 
-    fn append_set() -> Result<()> {
-        todo!
+    fn append_commit(&mut self) -> Result<()> {
+        self.wal_writer.write_all(&[OP_COMMIT])?;
+        Ok(())
     }
 
-    fn append_delete() -> Result<()> {
-        todo!
+    fn append_wal_set(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        self.wal_writer.write_all(&[OP_PUT])?;
+        let klen = (key.len() as u32).to_le_bytes();
+        let vlen = (value.len() as u32).to_le_bytes();
+        self.wal_writer.write_all(&klen)?;
+        self.wal_writer.write_all(&vlen)?;
+        self.wal_writer.write_all(key)?;
+        self.wal_writer.write_all(value)?;
+        Ok(())
     }
 
-    fn append_commit() -> Result<()> {
-        todo!
+    fn append_wal_delete(&mut self, key: &[u8]) -> Result<()> {
+        self.wal_writer.write_all(&[OP_DELETE])?;
+        let klen = (key.len() as u32).to_le_bytes();
+        let vlen = 0u32.to_le_bytes();
+        self.wal_writer.write_all(&klen)?;
+        self.wal_writer.write_all(&vlen)?;
+        self.wal_writer.write_all(key)?;
+        Ok(())
+    }
+
+    fn append_data_set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        let op: u8 = OP_PUT;
+
+        let key_bytes = key.as_slice();
+        let val_bytes = value.as_slice();
+
+        let key_len = key_bytes.len() as u32;
+        let key_len_bytes = key_len.to_le_bytes();
+
+        let val_len = val_bytes.len() as u32;
+        let val_len_bytes = val_len.to_le_bytes();
+
+        self.data_writer.write_all(&[op])?;
+        self.data_writer.write_all(&key_len_bytes)?;
+        self.data_writer.write_all(&val_len_bytes)?;
+        self.data_writer.write_all(key_bytes)?;
+        self.data_writer.write_all(val_bytes)?;
+
+        self.data_writer.flush()?;
+
+        self.index.insert(key, self.data_writer_pos);
+        self.data_writer_pos += 1 + 4 + 4 + key_len as u64 + val_len as u64;
+
+        Ok(())
+    }
+
+    fn append_data_delete(&mut self, key: Vec<u8>) -> Result<()> {
+        let op: u8 = OP_DELETE;
+        let key_bytes = key.as_slice();
+        
+        let key_len = key_bytes.len() as u32;
+        let key_len_bytes = key_len.to_le_bytes();
+
+        let val_len_bytes = 0u32.to_le_bytes();
+
+        self.data_writer.write_all(&[op])?;
+        self.data_writer.write_all(&key_len_bytes)?;
+        self.data_writer.write_all(&val_len_bytes)?;
+        self.data_writer.write_all(key_bytes)?;
+
+        self.data_writer.flush()?;
+
+        self.index.remove(&key);
+        self.data_writer_pos += 1 + 4 + 4 + key_len as u64;
+
+        Ok(())
     }
 }
 
-type Bytes = Vec<u8>;
 
 enum Ops {
     Set(Bytes, Bytes), 
     Delete(Bytes)
 }
 
-pub struct Transaction<> {
+pub struct Transaction {
     operations: Vec<Ops>, 
 }
 
-impl<'db> Transaction<'db> {
+impl Transaction {
     pub fn new() -> Self {
         Self { operations: Vec::new() }
     }
 
-    pub fn set(&mut self, key: K, value: V) -> Result<()>
+    pub fn set<K, V>(&mut self, key: K, value: V)
     where 
         K: AsRef<[u8]>, 
         V: AsRef<[u8]>,
@@ -109,7 +245,7 @@ impl<'db> Transaction<'db> {
         self.operations.push(Ops::Set(k, v));
     }
 
-    pub fn delete(&mut self, key: K) -> Result<()>
+    pub fn delete<K>(&mut self, key: K)
     where 
         K: AsRef<[u8]>, 
     {
