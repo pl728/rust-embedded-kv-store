@@ -24,6 +24,7 @@ impl Db {
 
     pub fn new() -> Result<Self> {
         let mut wal_read_file = OpenOptions::new()
+            .write(true)
             .read(true)
             .create(true)
             .open(Self::WAL_PATH)?;
@@ -35,6 +36,7 @@ impl Db {
             .open(Self::WAL_PATH)?;
         
         let mut data_read_file = OpenOptions::new()
+            .write(true)
             .read(true)
             .create(true)
             .open(Self::DATA_PATH)?;
@@ -91,10 +93,10 @@ impl Db {
             offset += val_len;
 
             match op {
-                Self::OP_PUT => {
+                OP_PUT => {
                     index.insert(key_buf, entry_start);
                 },
-                Self::OP_DELETE => {
+                OP_DELETE => {
                     index.remove(&key_buf);
                 },
                 _ => {}
@@ -109,6 +111,7 @@ impl Db {
         // Write to DATA
         // update index
         self.append_begin()?;
+        println!("Wrote OP_BEGIN to WAL");
 
         for op in &tx.operations {
             // 
@@ -122,9 +125,15 @@ impl Db {
             }
         }
 
+        println!("Wrote OPS to WAL buffer");
+
         self.append_commit()?;
+        println!("Wrote OP_COMMIT to WAL buffer");
+
         self.wal_writer.flush()?;
         self.wal_writer.get_ref().sync_all()?;
+
+        println!("Synced buffer contents with disk");
 
         for op in tx.operations {
             match op {
@@ -200,7 +209,7 @@ impl Db {
     fn append_data_delete(&mut self, key: Vec<u8>) -> Result<()> {
         let op: u8 = OP_DELETE;
         let key_bytes = key.as_slice();
-        
+
         let key_len = key_bytes.len() as u32;
         let key_len_bytes = key_len.to_le_bytes();
 
@@ -217,6 +226,36 @@ impl Db {
         self.data_writer_pos += 1 + 4 + 4 + key_len as u64;
 
         Ok(())
+    }
+
+    pub fn get<K>(&mut self, key: K) -> Result<Option<Bytes>>
+    where
+        K: AsRef<[u8]>,
+    {
+        let key_bytes = key.as_ref();
+        let Some(&offset) = self.index.get(key_bytes) else {
+            return Ok(None);
+        };
+
+        self.data_reader.seek(SeekFrom::Start(offset))?;
+
+        let mut op_buf = [0u8; 1];
+        self.data_reader.read_exact(&mut op_buf)?;
+        let _op = op_buf[0];
+
+        let mut len_buf = [0u8; 4];
+        self.data_reader.read_exact(&mut len_buf)?;
+        let key_len = u32::from_le_bytes(len_buf) as usize;
+        self.data_reader.read_exact(&mut len_buf)?;
+        let val_len = u32::from_le_bytes(len_buf) as usize;
+
+        let mut key_buf = vec![0u8; key_len];
+        let mut val_buf = vec![0u8; val_len];
+
+        self.data_reader.read_exact(&mut key_buf)?;
+        self.data_reader.read_exact(&mut val_buf)?;
+
+        Ok(Some(val_buf))
     }
 }
 
@@ -243,6 +282,7 @@ impl Transaction {
         let k = key.as_ref().to_vec();
         let v = value.as_ref().to_vec();
         self.operations.push(Ops::Set(k, v));
+        println!("Added SET to Transaction OPS");
     }
 
     pub fn delete<K>(&mut self, key: K)
@@ -251,5 +291,6 @@ impl Transaction {
     {
         let k = key.as_ref().to_vec();
         self.operations.push(Ops::Delete(k));
+        println!("Added DELETE to Transaction OPS");
     }
 }

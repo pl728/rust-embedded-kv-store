@@ -1,31 +1,47 @@
-use rust_embedded_kv_store::KvStore;
+use rust_embedded_kv_store::{Db, Transaction};
 use std::io::{self};
 
 fn main() -> io::Result<()> {
     // Start from a clean slate while experimenting
     let _ = std::fs::remove_file("data.log");
+    let _ = std::fs::remove_file("wal.log");
 
-    let mut store = KvStore::new()?;
+    let mut db = Db::new()?;
 
-    println!("get(foo) before put: {:?}", store.get("foo")?);
+    println!("get(foo) before set: {:?}", db.get(b"foo")?);
 
-    store.put("foo".to_string(), "bar".to_string())?;
-    println!("get(foo) after put: {:?}", store.get("foo")?);
+    // Create a transaction with a single set operation
+    let mut tx1 = Transaction::new();
+    tx1.set(b"foo", b"bar");
+    db.commit(tx1)?;
+    println!("get(foo) after set: {:?}", db.get(b"foo")?.map(String::from_utf8));
 
-    store.put("foo".to_string(), "baz".to_string())?;
-    println!("get(foo) after overwrite: {:?}", store.get("foo")?);
+    // Overwrite with a new transaction
+    let mut tx2 = Transaction::new();
+    tx2.set(b"foo", b"baz");
+    db.commit(tx2)?;
+    println!("get(foo) after overwrite: {:?}", db.get(b"foo")?.map(String::from_utf8));
 
-    store.put("key2".to_string(), "value2".to_string())?;
-    println!("get(key2): {:?}", store.get("key2")?);
+    // Transaction with multiple operations
+    let mut tx3 = Transaction::new();
+    tx3.set(b"key2", b"value2");
+    tx3.set(b"key3", b"value3");
+    db.commit(tx3)?;
+    println!("get(key2): {:?}", db.get(b"key2")?.map(String::from_utf8));
+    println!("get(key3): {:?}", db.get(b"key3")?.map(String::from_utf8));
 
-    store.delete("foo".to_string())?;
-    println!("get(foo) after delete: {:?}", store.get("foo")?);
+    // Delete operation
+    let mut tx4 = Transaction::new();
+    tx4.delete(b"foo");
+    db.commit(tx4)?;
+    println!("get(foo) after delete: {:?}", db.get(b"foo")?);
 
-    // Reopen to verify index rebuilding from log
-    drop(store);
-    let mut store2 = KvStore::new()?;
-    println!("get(foo) after reopen: {:?}", store2.get("foo")?);
-    println!("get(key2) after reopen: {:?}", store2.get("key2")?);
+    // Reopen to verify index rebuilding from data log
+    drop(db);
+    let mut db2 = Db::new()?;
+    println!("get(foo) after reopen: {:?}", db2.get(b"foo")?);
+    println!("get(key2) after reopen: {:?}", db2.get(b"key2")?.map(String::from_utf8));
+    println!("get(key3) after reopen: {:?}", db2.get(b"key3")?.map(String::from_utf8));
 
     Ok(())
 }
