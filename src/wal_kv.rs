@@ -106,14 +106,14 @@ impl Db {
         Ok((index, offset))
     }
 
-    pub fn commit(&mut self, tx: Transaction) -> Result<()> {
+    fn commit(&mut self, ops: Vec<Ops>) -> Result<()> {
         // write to WAL (begin, set/delete, commit)
         // Write to DATA
         // update index
         self.append_begin()?;
         println!("Wrote OP_BEGIN to WAL");
 
-        for op in &tx.operations {
+        for op in &ops {
             // 
             match op {
                 Ops::Set(k, v) => {
@@ -135,7 +135,7 @@ impl Db {
 
         println!("Synced buffer contents with disk");
 
-        for op in tx.operations {
+        for op in ops {
             match op {
                 Ops::Set(k, v) => {
                     self.append_data_set(k, v)?;
@@ -257,6 +257,13 @@ impl Db {
 
         Ok(Some(val_buf))
     }
+
+    pub fn begin_transaction(&mut self) -> Transaction<'_> {
+        Transaction {
+            db: self,
+            operations: Vec::new()
+        }
+    }
 }
 
 
@@ -265,15 +272,12 @@ enum Ops {
     Delete(Bytes)
 }
 
-pub struct Transaction {
+pub struct Transaction<'db> {
+    db: &'db mut Db,
     operations: Vec<Ops>, 
 }
 
-impl Transaction {
-    pub fn new() -> Self {
-        Self { operations: Vec::new() }
-    }
-
+impl<'db> Transaction<'db> {
     pub fn set<K, V>(&mut self, key: K, value: V)
     where 
         K: AsRef<[u8]>, 
@@ -292,5 +296,9 @@ impl Transaction {
         let k = key.as_ref().to_vec();
         self.operations.push(Ops::Delete(k));
         println!("Added DELETE to Transaction OPS");
+    }
+
+    pub fn commit(self) -> Result<()> {
+        self.db.commit(self.operations)
     }
 }

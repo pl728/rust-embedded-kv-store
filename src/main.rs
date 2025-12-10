@@ -1,4 +1,4 @@
-use rust_embedded_kv_store::{Db, Transaction};
+use rust_embedded_kv_store::Db;
 use std::io::{self};
 
 fn main() -> io::Result<()> {
@@ -11,29 +11,37 @@ fn main() -> io::Result<()> {
     println!("get(foo) before set: {:?}", db.get(b"foo")?);
 
     // Create a transaction with a single set operation
-    let mut tx1 = Transaction::new();
-    tx1.set(b"foo", b"bar");
-    db.commit(tx1)?;
+    {
+        let mut tx = db.begin_transaction();
+        tx.set(b"foo", b"bar");
+        tx.commit()?;
+    }
     println!("get(foo) after set: {:?}", db.get(b"foo")?.map(String::from_utf8));
 
     // Overwrite with a new transaction
-    let mut tx2 = Transaction::new();
-    tx2.set(b"foo", b"baz");
-    db.commit(tx2)?;
+    {
+        let mut tx = db.begin_transaction();
+        tx.set(b"foo", b"baz");
+        tx.commit()?;
+    }
     println!("get(foo) after overwrite: {:?}", db.get(b"foo")?.map(String::from_utf8));
 
     // Transaction with multiple operations
-    let mut tx3 = Transaction::new();
-    tx3.set(b"key2", b"value2");
-    tx3.set(b"key3", b"value3");
-    db.commit(tx3)?;
+    {
+        let mut tx = db.begin_transaction();
+        tx.set(b"key2", b"value2");
+        tx.set(b"key3", b"value3");
+        tx.commit()?;
+    }
     println!("get(key2): {:?}", db.get(b"key2")?.map(String::from_utf8));
     println!("get(key3): {:?}", db.get(b"key3")?.map(String::from_utf8));
 
     // Delete operation
-    let mut tx4 = Transaction::new();
-    tx4.delete(b"foo");
-    db.commit(tx4)?;
+    {
+        let mut tx = db.begin_transaction();
+        tx.delete(b"foo");
+        tx.commit()?;
+    }
     println!("get(foo) after delete: {:?}", db.get(b"foo")?);
 
     // Reopen to verify index rebuilding from data log
