@@ -11,37 +11,29 @@ fn main() -> io::Result<()> {
     println!("get(foo) before set: {:?}", db.get(b"foo")?);
 
     // Create a transaction with a single set operation
-    {
-        let mut tx = db.begin_transaction();
-        tx.set(b"foo", b"bar");
-        tx.commit()?;
-    }
+    let mut tx1 = db.begin_transaction();
+    tx1.set(b"foo", b"bar");
+    tx1.commit()?;
     println!("get(foo) after set: {:?}", db.get(b"foo")?.map(String::from_utf8));
 
     // Overwrite with a new transaction
-    {
-        let mut tx = db.begin_transaction();
-        tx.set(b"foo", b"baz");
-        tx.commit()?;
-    }
+    let mut tx2 = db.begin_transaction();
+    tx2.set(b"foo", b"baz");
+    tx2.commit()?;
     println!("get(foo) after overwrite: {:?}", db.get(b"foo")?.map(String::from_utf8));
 
     // Transaction with multiple operations
-    {
-        let mut tx = db.begin_transaction();
-        tx.set(b"key2", b"value2");
-        tx.set(b"key3", b"value3");
-        tx.commit()?;
-    }
+    let mut tx3 = db.begin_transaction();
+    tx3.set(b"key2", b"value2");
+    tx3.set(b"key3", b"value3");
+    tx3.commit()?;
     println!("get(key2): {:?}", db.get(b"key2")?.map(String::from_utf8));
     println!("get(key3): {:?}", db.get(b"key3")?.map(String::from_utf8));
 
     // Delete operation
-    {
-        let mut tx = db.begin_transaction();
-        tx.delete(b"foo");
-        tx.commit()?;
-    }
+    let mut tx4 = db.begin_transaction();
+    tx4.delete(b"foo");
+    tx4.commit()?;
     println!("get(foo) after delete: {:?}", db.get(b"foo")?);
 
     // Reopen to verify index rebuilding from data log
